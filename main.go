@@ -19,7 +19,7 @@ import (
 	rethink "gopkg.in/rethinkdb/rethinkdb-go.v6"
 )
 
-const doSetup = false
+const doSetup = true
 const maxCats = 2000000
 const maxTags = 20
 
