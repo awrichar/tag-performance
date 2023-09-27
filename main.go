@@ -58,43 +58,34 @@ func runSQLQuery(name string, query sq.SelectBuilder) error {
 		return err
 	}
 	defer rows.Close()
-	n := 0
-	for rows.Next() {
-		n++
+	var count interface{}
+	if rows.Next() {
+		if err := rows.Scan(&count); err != nil {
+			return err
+		}
+		log.Printf("%v rows", count)
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	log.Printf("%d rows", n)
 	return nil
 }
 
-func runMongoQuery(ctx context.Context, db *mongo.Collection, query bson.M) error {
+func runMongoQuery(ctx context.Context, name string, db *mongo.Collection, query bson.M) error {
 	start := time.Now()
 	defer func() {
-		log.Printf("%s took %v", "mongo", time.Since(start))
+		log.Printf("%s took %v", name, time.Since(start))
 	}()
 	log.Print(query)
-	rows, err := db.Find(ctx, query)
+	count, err := db.CountDocuments(ctx, query)
 	if err != nil {
 		return err
 	}
-	defer rows.Close(ctx)
-	n := 0
-	for rows.Next(ctx) {
-		n++
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	log.Printf("%d rows", n)
+	log.Printf("%d rows", count)
 	return nil
 }
 
-func runRethinkQuery(ctx context.Context, db *rethink.Session, query rethink.Term) error {
+func runRethinkQuery(ctx context.Context, name string, db *rethink.Session, query rethink.Term) error {
 	start := time.Now()
 	defer func() {
-		log.Printf("%s took %v", "rethink", time.Since(start))
+		log.Printf("%s took %v", name, time.Since(start))
 	}()
 	log.Print(query)
 	rows, err := query.Run(db)
@@ -102,15 +93,13 @@ func runRethinkQuery(ctx context.Context, db *rethink.Session, query rethink.Ter
 		return err
 	}
 	defer rows.Close()
-	n := 0
-	var row interface{}
-	for rows.Next(&row) {
-		n++
+	var count interface{}
+	if rows.Next(&count) {
+		log.Printf("%v rows", count)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	log.Printf("%d rows", n)
 	return nil
 }
 
@@ -188,7 +177,14 @@ func setupJoinTable(db *sql.DB, cats []*Cat) error {
 }
 
 func queryJoinTable(db *sql.DB) error {
-	query := sq.Select("name").From("cats").
+	query := sq.Select("COUNT(*)").From("cats").
+		Join("cat_tags tag1 ON cats.id = tag1.cat_id").
+		Where("tag1.tag_id = 2").
+		RunWith(db)
+	if err := runSQLQuery("join table (1 tag)", query); err != nil {
+		return err
+	}
+	query = sq.Select("COUNT(*)").From("cats").
 		Join("cat_tags tag1 ON cats.id = tag1.cat_id").
 		Join("cat_tags tag2 ON cats.id = tag2.cat_id").
 		Join("cat_tags tag3 ON cats.id = tag3.cat_id").
@@ -198,7 +194,7 @@ func queryJoinTable(db *sql.DB) error {
 		Where("tag3.tag_id = 7").
 		Where("tag4.tag_id = 8").
 		RunWith(db)
-	if err := runSQLQuery("join table", query); err != nil {
+	if err := runSQLQuery("join table (4 tags)", query); err != nil {
 		return err
 	}
 	return nil
@@ -253,10 +249,16 @@ func setupArrayColumn(db *sql.DB, cats []*Cat) error {
 }
 
 func queryArrayColumn(db *sql.DB) error {
-	query := sq.Select("name", "tags").From("cats_array").
+	query := sq.Select("COUNT(*)").From("cats_array").
+		Where(sq.Expr("tags @> '{2}'")).
+		RunWith(db)
+	if err := runSQLQuery("array column (1 tag)", query); err != nil {
+		return err
+	}
+	query = sq.Select("COUNT(*)").From("cats_array").
 		Where(sq.Expr("tags @> '{2,5,7,8}'")).
 		RunWith(db)
-	if err := runSQLQuery("array column", query); err != nil {
+	if err := runSQLQuery("array column (4 tags)", query); err != nil {
 		return err
 	}
 	return nil
@@ -299,7 +301,12 @@ func setupMongo(ctx context.Context, db *mongo.Client, cats []*Cat) error {
 
 func queryMongo(ctx context.Context, db *mongo.Client) error {
 	coll := db.Database("cats").Collection("cats")
-	if err := runMongoQuery(ctx, coll, bson.M{
+	if err := runMongoQuery(ctx, "mongo (1 tag)", coll, bson.M{
+		"tags": "2",
+	}); err != nil {
+		return err
+	}
+	if err := runMongoQuery(ctx, "mongo (4 tags)", coll, bson.M{
 		"tags": bson.M{
 			"$all": bson.A{"2", "5", "7", "8"},
 		},
@@ -346,10 +353,14 @@ func setupRethink(db *rethink.Session, cats []*Cat) error {
 }
 
 func queryRethink(ctx context.Context, db *rethink.Session) error {
-	query := rethink.Table("cats").Filter(
+	query := rethink.Table("cats").GetAllByIndex("tags", "2").Count()
+	if err := runRethinkQuery(ctx, "rethink (1 tag)", db, query); err != nil {
+		return err
+	}
+	query = rethink.Table("cats").Filter(
 		rethink.Row.Field("tags").Contains("2", "5", "7", "8"),
-	)
-	if err := runRethinkQuery(ctx, db, query); err != nil {
+	).Count()
+	if err := runRethinkQuery(ctx, "rethink (4 tags)", db, query); err != nil {
 		return err
 	}
 	return nil
