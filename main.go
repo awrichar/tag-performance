@@ -19,7 +19,6 @@ import (
 
 const doSetup = true
 const maxCats = 2000000
-const maxTags = 20
 
 const postgresUrl = "postgresql://postgres@localhost:8000/perf?sslmode=disable"
 const mongoUrl = "mongodb://localhost:8001"
@@ -29,18 +28,43 @@ type Cat struct {
 	tags []string
 }
 
-func makeTags() []string {
-	n := rand.Intn(10) + 1
-	tags := make([]string, 0, n)
-	used := make(map[string]bool, n)
-	for i := 0; i < n; i++ {
-		tag := fmt.Sprint(rand.Intn(maxTags))
-		if !used[tag] {
-			tags = append(tags, tag)
-			used[tag] = true
+type Tag struct {
+	name  string
+	color string
+}
+
+func makeTags() []*Tag {
+	return []*Tag{
+		{name: "friendly", color: "blue"},
+		{name: "color:brown", color: "brown"},
+		{name: "color:orange", color: "orange"},
+		{name: "color:black", color: "black"},
+		{name: "age:3", color: "red"},
+		{name: "age:4", color: "red"},
+		{name: "age:5", color: "red"},
+		{name: "age:6", color: "red"},
+	}
+}
+
+func makeCats(tags []*Tag) []*Cat {
+	cats := make([]*Cat, maxCats)
+	for i := range cats {
+		cats[i] = &Cat{
+			name: fmt.Sprintf("cat-%d", i),
+			tags: chooseTags(tags),
 		}
 	}
-	return tags
+	return cats
+}
+
+func chooseTags(tags []*Tag) []string {
+	chosen := make([]string, 0)
+	for _, tag := range tags {
+		if rand.Intn(2) == 1 {
+			chosen = append(chosen, tag.name)
+		}
+	}
+	return chosen
 }
 
 func runSQLQuery(name string, query sq.SelectBuilder) error {
@@ -48,8 +72,8 @@ func runSQLQuery(name string, query sq.SelectBuilder) error {
 	defer func() {
 		log.Printf("%s took %v", name, time.Since(start))
 	}()
-	sql, _, _ := query.ToSql()
-	log.Print(sql)
+	sql, args, _ := query.ToSql()
+	log.Printf("%s; args:%v", sql, args)
 	rows, err := query.Query()
 	if err != nil {
 		return err
@@ -88,30 +112,54 @@ func printCounter(counter int) {
 	}
 }
 
-func insertBatchJoinTable(tx *sql.Tx, batch []*Cat) error {
-	inserts := make([]string, 0)
-	for _, c := range batch {
-		inserts = append(inserts, fmt.Sprintf("('%s')", c.name))
+func insertBatchJoinTable(tx *sql.Tx, batch []*Cat, tagMap map[string]int) error {
+	inserts := make([]string, len(batch))
+	args := make([]interface{}, len(batch))
+	for i, cat := range batch {
+		args[i] = cat.name
+		inserts[i] = fmt.Sprintf("($%d)", i+1)
 	}
-	result, err := tx.Query(fmt.Sprintf("INSERT INTO cats(name) VALUES %s RETURNING id", strings.Join(inserts, ",")))
+	result, err := tx.Query(fmt.Sprintf("INSERT INTO cats(name) VALUES %s RETURNING id", strings.Join(inserts, ",")), args...)
 	if err != nil {
 		return err
 	}
-	i := 0
-	vals := make([]string, 0)
-	for result.Next() {
+	vals := make([]string, 0, len(inserts))
+	args = make([]interface{}, 0, len(inserts)*2)
+	for i := 0; result.Next(); i++ {
 		var id int
-		result.Scan(&id)
-		for _, tag := range batch[i].tags {
-			vals = append(vals, fmt.Sprintf("(%d,%s)", id, tag))
+		if err := result.Scan(&id); err != nil {
+			return err
 		}
-		i++
+		for _, tag := range batch[i].tags {
+			args = append(args, id)
+			args = append(args, tagMap[tag])
+			vals = append(vals, fmt.Sprintf("($%d, $%d)", len(args)-1, len(args)))
+		}
 	}
-	_, err = tx.Exec("INSERT INTO cat_tags(cat_id, tag_id) VALUES " + strings.Join(vals, ","))
+	_, err = tx.Exec("INSERT INTO cat_tags(cat_id, tag_id) VALUES "+strings.Join(vals, ","), args...)
 	return err
 }
 
-func setupJoinTable(db *sql.DB, cats []*Cat) error {
+func buildTagMap(tx *sql.Tx, tags []*Tag) (map[string]int, error) {
+	tagMap := make(map[string]int, len(tags))
+	for _, tag := range tags {
+		result, err := tx.Query("INSERT INTO tags(name, color) VALUES($1, $2) RETURNING id, name", tag.name, tag.color)
+		if err != nil {
+			return nil, err
+		}
+		for result.Next() {
+			var id int
+			var name string
+			if err := result.Scan(&id, &name); err != nil {
+				return nil, err
+			}
+			tagMap[name] = id
+		}
+	}
+	return tagMap, nil
+}
+
+func setupJoinTable(db *sql.DB, cats []*Cat, tags []*Tag) error {
 	log.Print("Building join table")
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
@@ -120,13 +168,20 @@ func setupJoinTable(db *sql.DB, cats []*Cat) error {
 	defer tx.Rollback()
 	_, err = tx.Exec(`
         DROP TABLE IF EXISTS cats;
+		DROP TABLE IF EXISTS tags;
         DROP TABLE IF EXISTS cat_tags;
         DROP INDEX IF EXISTS cat_tags_x;
         CREATE TABLE cats(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
+		CREATE TABLE tags(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL, color VARCHAR NOT NULL);
         CREATE TABLE cat_tags(cat_id INTEGER NOT NULL, tag_id INTEGER NOT NULL);
         CREATE INDEX cats_x ON cats(id);
+		CREATE INDEX tags_x ON tags(id);
         CREATE INDEX cat_tags_x ON cat_tags(tag_id);
     `)
+	if err != nil {
+		return err
+	}
+	tagMap, err := buildTagMap(tx, tags)
 	if err != nil {
 		return err
 	}
@@ -138,14 +193,14 @@ func setupJoinTable(db *sql.DB, cats []*Cat) error {
 		printCounter(counter)
 		batch = append(batch, cat)
 		if len(batch) >= batchMax {
-			if err := insertBatchJoinTable(tx, batch); err != nil {
+			if err := insertBatchJoinTable(tx, batch, tagMap); err != nil {
 				return err
 			}
 			batch = make([]*Cat, 0, batchMax)
 		}
 	}
 	if len(batch) > 0 {
-		if err := insertBatchJoinTable(tx, batch); err != nil {
+		if err := insertBatchJoinTable(tx, batch, tagMap); err != nil {
 			return err
 		}
 	}
@@ -155,7 +210,8 @@ func setupJoinTable(db *sql.DB, cats []*Cat) error {
 func queryJoinTable(db *sql.DB) error {
 	query := sq.Select("COUNT(*)").From("cats").
 		Join("cat_tags tag1 ON cats.id = tag1.cat_id").
-		Where("tag1.tag_id = 2").
+		Join("tags ON tag1.tag_id = tags.id").
+		Where("tags.name = $1", "friendly").
 		RunWith(db)
 	if err := runSQLQuery("join table (1 tag)", query); err != nil {
 		return err
@@ -164,29 +220,36 @@ func queryJoinTable(db *sql.DB) error {
 		Join("cat_tags tag1 ON cats.id = tag1.cat_id").
 		Join("cat_tags tag2 ON cats.id = tag2.cat_id").
 		Join("cat_tags tag3 ON cats.id = tag3.cat_id").
-		Join("cat_tags tag4 ON cats.id = tag4.cat_id").
-		Where("tag1.tag_id = 2").
-		Where("tag2.tag_id = 5").
-		Where("tag3.tag_id = 7").
-		Where("tag4.tag_id = 8").
+		Join("tags tagn1 ON tag1.tag_id = tagn1.id").
+		Join("tags tagn2 ON tag2.tag_id = tagn2.id").
+		Join("tags tagn3 ON tag3.tag_id = tagn3.id").
+		Where("tagn1.name = $1", "friendly").
+		Where("tagn2.name = $2", "color:brown").
+		Where("tagn3.name = $3", "age:4").
 		RunWith(db)
-	if err := runSQLQuery("join table (4 tags)", query); err != nil {
+	if err := runSQLQuery("join table (3 tags)", query); err != nil {
 		return err
 	}
 	return nil
 }
 
-func insertBatchArrayColumn(tx *sql.Tx, batch []*Cat) error {
-	inserts := make([]string, 0)
-	for _, c := range batch {
-		tags := "{" + strings.Join(c.tags, ",") + "}"
-		inserts = append(inserts, fmt.Sprintf("('%s', '%s')", c.name, tags))
+func insertBatchArrayColumn(tx *sql.Tx, batch []*Cat, tagMap map[string]int) error {
+	inserts := make([]string, len(batch))
+	args := make([]interface{}, 0, len(batch))
+	for i, cat := range batch {
+		tags := make([]string, len(cat.tags))
+		for j, tag := range cat.tags {
+			tags[j] = fmt.Sprint(tagMap[tag])
+		}
+		args = append(args, cat.name)
+		args = append(args, "{"+strings.Join(tags, ",")+"}")
+		inserts[i] = fmt.Sprintf("($%d, $%d)", len(args)-1, len(args))
 	}
-	_, err := tx.Exec("INSERT INTO cats_array(name, tags) VALUES " + strings.Join(inserts, ","))
+	_, err := tx.Exec("INSERT INTO cats_array(name, tags) VALUES "+strings.Join(inserts, ","), args...)
 	return err
 }
 
-func setupArrayColumn(db *sql.DB, cats []*Cat) error {
+func setupArrayColumn(db *sql.DB, cats []*Cat, tags []*Tag) error {
 	log.Print("Building array column")
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
@@ -195,10 +258,16 @@ func setupArrayColumn(db *sql.DB, cats []*Cat) error {
 	defer tx.Rollback()
 	_, err = tx.Exec(`
         DROP TABLE IF EXISTS cats_array;
+		DROP TABLE IF EXISTS tags;
         DROP INDEX IF EXISTS cats_array_x;
         CREATE TABLE cats_array(name VARCHAR NOT NULL, tags INTEGER[]);
+		CREATE TABLE tags(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL, color VARCHAR NOT NULL);
         CREATE INDEX cats_array_x ON cats_array USING GIN(tags);
     `)
+	if err != nil {
+		return err
+	}
+	tagMap, err := buildTagMap(tx, tags)
 	if err != nil {
 		return err
 	}
@@ -210,14 +279,14 @@ func setupArrayColumn(db *sql.DB, cats []*Cat) error {
 		printCounter(counter)
 		batch = append(batch, cat)
 		if len(batch) >= batchMax {
-			if err := insertBatchArrayColumn(tx, batch); err != nil {
+			if err := insertBatchArrayColumn(tx, batch, tagMap); err != nil {
 				return err
 			}
 			batch = make([]*Cat, 0, batchMax)
 		}
 	}
 	if len(batch) > 0 {
-		if err := insertBatchArrayColumn(tx, batch); err != nil {
+		if err := insertBatchArrayColumn(tx, batch, tagMap); err != nil {
 			return err
 		}
 	}
@@ -226,15 +295,15 @@ func setupArrayColumn(db *sql.DB, cats []*Cat) error {
 
 func queryArrayColumn(db *sql.DB) error {
 	query := sq.Select("COUNT(*)").From("cats_array").
-		Where(sq.Expr("tags @> '{2}'")).
+		Where(sq.Expr("tags @> ARRAY(SELECT id FROM tags WHERE name = $1)", "friendly")).
 		RunWith(db)
 	if err := runSQLQuery("array column (1 tag)", query); err != nil {
 		return err
 	}
 	query = sq.Select("COUNT(*)").From("cats_array").
-		Where(sq.Expr("tags @> '{2,5,7,8}'")).
+		Where(sq.Expr("tags @> ARRAY(SELECT id FROM tags WHERE name IN ($1, $2, $3))", "friendly", "color:brown", "age:4")).
 		RunWith(db)
-	if err := runSQLQuery("array column (4 tags)", query); err != nil {
+	if err := runSQLQuery("array column (3 tags)", query); err != nil {
 		return err
 	}
 	return nil
@@ -278,13 +347,13 @@ func setupMongo(ctx context.Context, db *mongo.Client, cats []*Cat) error {
 func queryMongo(ctx context.Context, db *mongo.Client) error {
 	coll := db.Database("cats").Collection("cats")
 	if err := runMongoQuery(ctx, "mongo (1 tag)", coll, bson.M{
-		"tags": "2",
+		"tags": "friendly",
 	}); err != nil {
 		return err
 	}
-	if err := runMongoQuery(ctx, "mongo (4 tags)", coll, bson.M{
+	if err := runMongoQuery(ctx, "mongo (3 tags)", coll, bson.M{
 		"tags": bson.M{
-			"$all": bson.A{"2", "5", "7", "8"},
+			"$all": bson.A{"friendly", "color:brown", "age:4"},
 		},
 	}); err != nil {
 		return err
@@ -308,18 +377,13 @@ func main() {
 	}
 
 	if doSetup {
-		log.Printf("Building tables using %d cats with up to %d tags each", maxCats, maxTags)
-		cats := make([]*Cat, maxCats)
-		for i := range cats {
-			cats[i] = &Cat{
-				name: fmt.Sprintf("cat-%d", i),
-				tags: makeTags(),
-			}
-		}
-		if err := setupJoinTable(psql, cats); err != nil {
+		tags := makeTags()
+		cats := makeCats(tags)
+		log.Printf("Building tables using %d cats with up to %d tags each", len(cats), len(tags))
+		if err := setupJoinTable(psql, cats, tags); err != nil {
 			log.Fatal(err)
 		}
-		if err := setupArrayColumn(psql, cats); err != nil {
+		if err := setupArrayColumn(psql, cats, tags); err != nil {
 			log.Fatal(err)
 		}
 		if err := setupMongo(ctx, mdb, cats); err != nil {
