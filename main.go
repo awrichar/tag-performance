@@ -25,24 +25,24 @@ const mongoUrl = "mongodb://localhost:8001"
 
 type Cat struct {
 	name string
-	tags []string
+	tags []*TagValue
+}
+
+type TagValue struct {
+	name  string
+	value string
 }
 
 type Tag struct {
-	name  string
-	color string
+	name   string
+	values []string
 }
 
 func makeTags() []*Tag {
 	return []*Tag{
-		{name: "friendly", color: "blue"},
-		{name: "color:brown", color: "brown"},
-		{name: "color:orange", color: "orange"},
-		{name: "color:black", color: "black"},
-		{name: "age:3", color: "red"},
-		{name: "age:4", color: "red"},
-		{name: "age:5", color: "red"},
-		{name: "age:6", color: "red"},
+		{name: "color", values: []string{"brown", "orange", "black"}},
+		{name: "age", values: []string{"3", "4", "5", "6"}},
+		{name: "demeanor", values: []string{"friendly", "grumpy"}},
 	}
 }
 
@@ -57,11 +57,15 @@ func makeCats(tags []*Tag) []*Cat {
 	return cats
 }
 
-func chooseTags(tags []*Tag) []string {
-	chosen := make([]string, 0)
+func chooseTags(tags []*Tag) []*TagValue {
+	chosen := make([]*TagValue, 0)
 	for _, tag := range tags {
-		if rand.Intn(2) == 1 {
-			chosen = append(chosen, tag.name)
+		choice := rand.Intn(len(tag.values) + 1)
+		if choice > 0 {
+			chosen = append(chosen, &TagValue{
+				name:  tag.name,
+				value: tag.values[choice-1],
+			})
 		}
 	}
 	return chosen
@@ -132,18 +136,19 @@ func insertBatchJoinTable(tx *sql.Tx, batch []*Cat, tagMap map[string]int) error
 		}
 		for _, tag := range batch[i].tags {
 			args = append(args, id)
-			args = append(args, tagMap[tag])
-			vals = append(vals, fmt.Sprintf("($%d, $%d)", len(args)-1, len(args)))
+			args = append(args, tagMap[tag.name])
+			args = append(args, tag.value)
+			vals = append(vals, fmt.Sprintf("($%d, $%d, $%d)", len(args)-2, len(args)-1, len(args)))
 		}
 	}
-	_, err = tx.Exec("INSERT INTO cat_tags(cat_id, tag_id) VALUES "+strings.Join(vals, ","), args...)
+	_, err = tx.Exec("INSERT INTO cat_tags(cat_id, tag_id, value) VALUES "+strings.Join(vals, ","), args...)
 	return err
 }
 
 func buildTagMap(tx *sql.Tx, tags []*Tag) (map[string]int, error) {
 	tagMap := make(map[string]int, len(tags))
 	for _, tag := range tags {
-		result, err := tx.Query("INSERT INTO tags(name, color) VALUES($1, $2) RETURNING id, name", tag.name, tag.color)
+		result, err := tx.Query("INSERT INTO tags(name) VALUES($1) RETURNING id, name", tag.name)
 		if err != nil {
 			return nil, err
 		}
@@ -172,8 +177,8 @@ func setupJoinTable(db *sql.DB, cats []*Cat, tags []*Tag) error {
         DROP TABLE IF EXISTS cat_tags;
         DROP INDEX IF EXISTS cat_tags_x;
         CREATE TABLE cats(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
-		CREATE TABLE tags(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL, color VARCHAR NOT NULL);
-        CREATE TABLE cat_tags(cat_id INTEGER NOT NULL, tag_id INTEGER NOT NULL);
+		CREATE TABLE tags(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
+        CREATE TABLE cat_tags(cat_id INTEGER NOT NULL, tag_id INTEGER NOT NULL, value VARCHAR NOT NULL);
         CREATE INDEX cats_x ON cats(id);
 		CREATE INDEX tags_x ON tags(id);
         CREATE INDEX cat_tags_x ON cat_tags(tag_id);
@@ -210,8 +215,12 @@ func setupJoinTable(db *sql.DB, cats []*Cat, tags []*Tag) error {
 func queryJoinTable(db *sql.DB) error {
 	query := sq.Select("COUNT(*)").From("cats").
 		Join("cat_tags tag1 ON cats.id = tag1.cat_id").
-		Join("tags ON tag1.tag_id = tags.id").
-		Where("tags.name = $1", "friendly").
+		Join("tags tagn1 ON tag1.tag_id = tagn1.id").
+		Where(sq.Eq{
+			"tagn1.name": "color",
+			"tag1.value": "brown",
+		}).
+		PlaceholderFormat(sq.Dollar).
 		RunWith(db)
 	if err := runSQLQuery("join table (1 tag)", query); err != nil {
 		return err
@@ -223,9 +232,19 @@ func queryJoinTable(db *sql.DB) error {
 		Join("tags tagn1 ON tag1.tag_id = tagn1.id").
 		Join("tags tagn2 ON tag2.tag_id = tagn2.id").
 		Join("tags tagn3 ON tag3.tag_id = tagn3.id").
-		Where("tagn1.name = $1", "friendly").
-		Where("tagn2.name = $2", "color:brown").
-		Where("tagn3.name = $3", "age:4").
+		Where(sq.And{
+			sq.Eq{
+				"tagn1.name": "color",
+				"tag1.value": "brown",
+				"tagn2.name": "age",
+				"tagn3.name": "demeanor",
+				"tag3.value": "grumpy",
+			},
+			sq.GtOrEq{
+				"tag2.value": "4",
+			},
+		}).
+		PlaceholderFormat(sq.Dollar).
 		RunWith(db)
 	if err := runSQLQuery("join table (3 tags)", query); err != nil {
 		return err
@@ -233,16 +252,16 @@ func queryJoinTable(db *sql.DB) error {
 	return nil
 }
 
-func insertBatchArrayColumn(tx *sql.Tx, batch []*Cat, tagMap map[string]int) error {
+func insertBatchArrayColumn(tx *sql.Tx, batch []*Cat, tagValueMap map[string]string) error {
 	inserts := make([]string, len(batch))
 	args := make([]interface{}, 0, len(batch))
 	for i, cat := range batch {
-		tags := make([]string, len(cat.tags))
+		catTags := make([]string, len(cat.tags))
 		for j, tag := range cat.tags {
-			tags[j] = fmt.Sprint(tagMap[tag])
+			catTags[j] = tagValueMap[fmt.Sprintf("%s:%s", tag.name, tag.value)]
 		}
 		args = append(args, cat.name)
-		args = append(args, "{"+strings.Join(tags, ",")+"}")
+		args = append(args, "{"+strings.Join(catTags, ",")+"}")
 		inserts[i] = fmt.Sprintf("($%d, $%d)", len(args)-1, len(args))
 	}
 	_, err := tx.Exec("INSERT INTO cats_array(name, tags) VALUES "+strings.Join(inserts, ","), args...)
@@ -259,17 +278,41 @@ func setupArrayColumn(db *sql.DB, cats []*Cat, tags []*Tag) error {
 	_, err = tx.Exec(`
         DROP TABLE IF EXISTS cats_array;
 		DROP TABLE IF EXISTS tags;
+		DROP TABLE IF EXISTS tag_values;
         DROP INDEX IF EXISTS cats_array_x;
+		DROP INDEX IF EXISTS tags_x;
+		DROP INDEX IF EXISTS tag_values_x;
+		DROP INDEX IF EXISTS tag_values_name;
         CREATE TABLE cats_array(name VARCHAR NOT NULL, tags INTEGER[]);
-		CREATE TABLE tags(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL, color VARCHAR NOT NULL);
+		CREATE TABLE tags(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
+		CREATE TABLE tag_values(id SERIAL PRIMARY KEY, tag_id INTEGER NOT NULL, value VARCHAR NOT NULL);
         CREATE INDEX cats_array_x ON cats_array USING GIN(tags);
-    `)
+		CREATE INDEX tags_x ON tags(id);
+		CREATE INDEX tag_values_x ON tag_values(id);
+		CREATE UNIQUE INDEX tag_values_name ON tag_values(tag_id, value);
+		`)
 	if err != nil {
 		return err
 	}
 	tagMap, err := buildTagMap(tx, tags)
 	if err != nil {
 		return err
+	}
+	tagValueMap := make(map[string]string, 0)
+	for _, tag := range tags {
+		for _, val := range tag.values {
+			result, err := tx.Query("INSERT INTO tag_values(tag_id, value) VALUES($1, $2) RETURNING id", tagMap[tag.name], val)
+			if err != nil {
+				return err
+			}
+			result.Next()
+			var valID string
+			if err := result.Scan(&valID); err != nil {
+				return err
+			}
+			result.Close()
+			tagValueMap[fmt.Sprintf("%s:%s", tag.name, val)] = valID
+		}
 	}
 	counter := 0
 	batchMax := 100
@@ -279,14 +322,14 @@ func setupArrayColumn(db *sql.DB, cats []*Cat, tags []*Tag) error {
 		printCounter(counter)
 		batch = append(batch, cat)
 		if len(batch) >= batchMax {
-			if err := insertBatchArrayColumn(tx, batch, tagMap); err != nil {
+			if err := insertBatchArrayColumn(tx, batch, tagValueMap); err != nil {
 				return err
 			}
 			batch = make([]*Cat, 0, batchMax)
 		}
 	}
 	if len(batch) > 0 {
-		if err := insertBatchArrayColumn(tx, batch, tagMap); err != nil {
+		if err := insertBatchArrayColumn(tx, batch, tagValueMap); err != nil {
 			return err
 		}
 	}
@@ -295,13 +338,50 @@ func setupArrayColumn(db *sql.DB, cats []*Cat, tags []*Tag) error {
 
 func queryArrayColumn(db *sql.DB) error {
 	query := sq.Select("COUNT(*)").From("cats_array").
-		Where(sq.Expr("tags @> ARRAY(SELECT id FROM tags WHERE name = $1)", "friendly")).
+		Where(
+			sq.Expr("cats_array.tags @> ARRAY(?)",
+				sq.Select("tag_values.id").From("tag_values").
+					Join("tags ON tag_values.tag_id = tags.id").
+					Where(sq.Eq{
+						"tags.name":        "color",
+						"tag_values.value": "brown",
+					}).PlaceholderFormat(sq.Dollar),
+			),
+		).
 		RunWith(db)
 	if err := runSQLQuery("array column (1 tag)", query); err != nil {
 		return err
 	}
 	query = sq.Select("COUNT(*)").From("cats_array").
-		Where(sq.Expr("tags @> ARRAY(SELECT id FROM tags WHERE name IN ($1, $2, $3))", "friendly", "color:brown", "age:4")).
+		Where(
+			sq.And{
+				sq.Expr("cats_array.tags && ARRAY(?)",
+					sq.Select("tag_values.id").From("tag_values").
+						Join("tags ON tag_values.tag_id = tags.id").
+						Where(sq.Eq{
+							"tags.name":        "color",
+							"tag_values.value": "brown",
+						}),
+				),
+				sq.Expr("cats_array.tags && ARRAY(?)",
+					sq.Select("tag_values.id").From("tag_values").
+						Join("tags ON tag_values.tag_id = tags.id").
+						Where(sq.Eq{
+							"tags.name":        "demeanor",
+							"tag_values.value": "grumpy",
+						}),
+				),
+				sq.Expr("cats_array.tags && ARRAY(?)",
+					sq.Select("tag_values.id").From("tag_values").
+						Join("tags ON tag_values.tag_id = tags.id").
+						Where(sq.And{
+							sq.Eq{"tags.name": "age"},
+							sq.GtOrEq{"tag_values.value": "4"},
+						}),
+				),
+			},
+		).
+		PlaceholderFormat(sq.Dollar).
 		RunWith(db)
 	if err := runSQLQuery("array column (3 tags)", query); err != nil {
 		return err
@@ -325,9 +405,13 @@ func setupMongo(ctx context.Context, db *mongo.Client, cats []*Cat) error {
 	for _, cat := range cats {
 		counter++
 		printCounter(counter)
+		catTags := make(map[string]string, len(cat.tags))
+		for _, tag := range cat.tags {
+			catTags[tag.name] = tag.value
+		}
 		batch = append(batch, bson.M{
 			"name": cat.name,
-			"tags": cat.tags,
+			"tags": catTags,
 		})
 		if len(batch) >= batchMax {
 			if _, err := coll.InsertMany(ctx, batch); err != nil {
@@ -347,14 +431,14 @@ func setupMongo(ctx context.Context, db *mongo.Client, cats []*Cat) error {
 func queryMongo(ctx context.Context, db *mongo.Client) error {
 	coll := db.Database("cats").Collection("cats")
 	if err := runMongoQuery(ctx, "mongo (1 tag)", coll, bson.M{
-		"tags": "friendly",
+		"tags.color": "brown",
 	}); err != nil {
 		return err
 	}
 	if err := runMongoQuery(ctx, "mongo (3 tags)", coll, bson.M{
-		"tags": bson.M{
-			"$all": bson.A{"friendly", "color:brown", "age:4"},
-		},
+		"tags.color":    "brown",
+		"tags.age":      bson.M{"$gte": "4"},
+		"tags.demeanor": "grumpy",
 	}); err != nil {
 		return err
 	}
