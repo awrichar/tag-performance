@@ -15,8 +15,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-
-	rethink "gopkg.in/rethinkdb/rethinkdb-go.v6"
 )
 
 const doSetup = true
@@ -25,7 +23,6 @@ const maxTags = 20
 
 const postgresUrl = "postgresql://postgres@localhost:8000/perf?sslmode=disable"
 const mongoUrl = "mongodb://localhost:8001"
-const rethinkUrl = "localhost:8002"
 
 type Cat struct {
 	name string
@@ -79,27 +76,6 @@ func runMongoQuery(ctx context.Context, name string, db *mongo.Collection, query
 		return err
 	}
 	log.Printf("%d rows", count)
-	return nil
-}
-
-func runRethinkQuery(ctx context.Context, name string, db *rethink.Session, query rethink.Term) error {
-	start := time.Now()
-	defer func() {
-		log.Printf("%s took %v", name, time.Since(start))
-	}()
-	log.Print(query)
-	rows, err := query.Run(db)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	var count interface{}
-	if rows.Next(&count) {
-		log.Printf("%v rows", count)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -316,56 +292,6 @@ func queryMongo(ctx context.Context, db *mongo.Client) error {
 	return nil
 }
 
-func setupRethink(db *rethink.Session, cats []*Cat) error {
-	log.Print("Building rethink")
-	rethink.TableDrop("cats").Run(db)
-	if _, err := rethink.TableCreate("cats").Run(db); err != nil {
-		return err
-	}
-	if _, err := rethink.Table("cats").IndexCreate("tags",
-		rethink.IndexCreateOpts{Multi: true},
-	).Run(db); err != nil {
-		return err
-	}
-	counter := 0
-	batchMax := 10000
-	batch := make([]interface{}, 0, batchMax)
-	for _, cat := range cats {
-		counter++
-		printCounter(counter)
-		batch = append(batch, map[string]interface{}{
-			"name": cat.name,
-			"tags": cat.tags,
-		})
-		if len(batch) >= batchMax {
-			if _, err := rethink.Table("cats").Insert(batch).Run(db); err != nil {
-				return err
-			}
-			batch = make([]interface{}, 0, batchMax)
-		}
-	}
-	if len(batch) > 0 {
-		if _, err := rethink.Table("cats").Insert(batch).Run(db); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func queryRethink(ctx context.Context, db *rethink.Session) error {
-	query := rethink.Table("cats").GetAllByIndex("tags", "2").Count()
-	if err := runRethinkQuery(ctx, "rethink (1 tag)", db, query); err != nil {
-		return err
-	}
-	query = rethink.Table("cats").Filter(
-		rethink.Row.Field("tags").Contains("2", "5", "7", "8"),
-	).Count()
-	if err := runRethinkQuery(ctx, "rethink (4 tags)", db, query); err != nil {
-		return err
-	}
-	return nil
-}
-
 func main() {
 	ctx := context.Background()
 
@@ -377,13 +303,6 @@ func main() {
 	mdb, err := mongo.Connect(ctx, options.Client().
 		ApplyURI(mongoUrl).
 		SetServerAPIOptions(options.ServerAPI(options.ServerAPIVersion1)))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	rdb, err := rethink.Connect(rethink.ConnectOpts{
-		Address: rethinkUrl,
-	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -406,9 +325,6 @@ func main() {
 		if err := setupMongo(ctx, mdb, cats); err != nil {
 			log.Fatal(err)
 		}
-		if err := setupRethink(rdb, cats); err != nil {
-			log.Fatal(err)
-		}
 		log.Print("Done building tables")
 	}
 
@@ -419,9 +335,6 @@ func main() {
 		log.Fatal(err)
 	}
 	if err := queryMongo(ctx, mdb); err != nil {
-		log.Fatal(err)
-	}
-	if err := queryRethink(ctx, rdb); err != nil {
 		log.Fatal(err)
 	}
 }
