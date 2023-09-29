@@ -41,7 +41,7 @@ func SetupMongo(ctx context.Context, db *mongo.Client, cats []*common.Cat) error
 	for _, cat := range cats {
 		counter++
 		common.PrintCounter(counter)
-		catTags := make(map[string]string, len(cat.Tags))
+		catTags := make(map[string]interface{}, len(cat.Tags))
 		for _, tag := range cat.Tags {
 			catTags[tag.Name] = tag.Value
 		}

@@ -23,9 +23,9 @@ const mongoUrl = "mongodb://localhost:8001"
 
 func makeTags() []*common.Tag {
 	return []*common.Tag{
-		{Name: "color", Values: []string{"brown", "orange", "black"}},
-		{Name: "age", Values: []string{"3", "4", "5", "6"}},
-		{Name: "demeanor", Values: []string{"friendly", "grumpy"}},
+		{Name: "color", Values: []interface{}{"brown", "orange", "black"}},
+		{Name: "age", Values: []interface{}{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}},
+		{Name: "demeanor", Values: []interface{}{"friendly", "grumpy"}},
 	}
 }
 
@@ -79,6 +79,9 @@ func main() {
 		if err := postgrestest.SetupArrayColumn(psql, cats, tags); err != nil {
 			log.Fatal(err)
 		}
+		if err := postgrestest.SetupJSONColumn(psql, cats, tags); err != nil {
+			log.Fatal(err)
+		}
 		if err := mongotest.SetupMongo(ctx, mdb, cats); err != nil {
 			log.Fatal(err)
 		}
@@ -89,6 +92,9 @@ func main() {
 		log.Fatal(err)
 	}
 	if err := postgrestest.QueryArrayColumn(psql); err != nil {
+		log.Fatal(err)
+	}
+	if err := postgrestest.QueryJSONColumn(psql); err != nil {
 		log.Fatal(err)
 	}
 	if err := mongotest.QueryMongo(ctx, mdb); err != nil {

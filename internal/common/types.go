@@ -7,10 +7,10 @@ type Cat struct {
 
 type TagValue struct {
 	Name  string
-	Value string
+	Value interface{}
 }
 
 type Tag struct {
 	Name   string
-	Values []string
+	Values []interface{}
 }

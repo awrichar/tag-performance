@@ -133,34 +133,28 @@ func QueryArrayColumn(db *sql.DB) error {
 		return err
 	}
 	query = sq.Select("COUNT(*)").From("cats_a").
-		Where(
-			sq.And{
-				sq.Expr("cats_a.tags && ARRAY(?)",
-					sq.Select("tag_values_a.id").From("tag_values_a").
-						Join("tags_a ON tag_values_a.tag_id = tags_a.id").
-						Where(sq.Eq{
-							"tags_a.name":        "color",
-							"tag_values_a.value": "brown",
-						}),
-				),
-				sq.Expr("cats_a.tags && ARRAY(?)",
-					sq.Select("tag_values_a.id").From("tag_values_a").
-						Join("tags_a ON tag_values_a.tag_id = tags_a.id").
-						Where(sq.Eq{
-							"tags_a.name":        "demeanor",
-							"tag_values_a.value": "grumpy",
-						}),
-				),
-				sq.Expr("cats_a.tags && ARRAY(?)",
-					sq.Select("tag_values_a.id").From("tag_values_a").
-						Join("tags_a ON tag_values_a.tag_id = tags_a.id").
-						Where(sq.And{
-							sq.Eq{"tags_a.name": "age"},
-							sq.GtOrEq{"tag_values_a.value": "4"},
-						}),
-				),
-			},
-		).
+		Where(sq.Expr("cats_a.tags @> ARRAY(?)",
+			sq.Select("tag_values_a.id").From("tag_values_a").
+				Join("tags_a ON tag_values_a.tag_id = tags_a.id").
+				Where(sq.Or{
+					sq.Eq{
+						"tags_a.name":        "color",
+						"tag_values_a.value": "brown",
+					},
+					sq.Eq{
+						"tags_a.name":        "demeanor",
+						"tag_values_a.value": "grumpy",
+					},
+				}),
+		)).
+		Where(sq.Expr("cats_a.tags && ARRAY(?)",
+			sq.Select("tag_values_a.id").From("tag_values_a").
+				Join("tags_a ON tag_values_a.tag_id = tags_a.id").
+				Where(sq.And{
+					sq.Eq{"tags_a.name": "age"},
+					sq.GtOrEq{"tag_values_a.value": "4"},
+				}),
+		)).
 		PlaceholderFormat(sq.Dollar).
 		RunWith(db)
 	if err := runSQLQuery("array column (3 tags)", query); err != nil {
