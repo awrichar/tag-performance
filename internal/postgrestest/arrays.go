@@ -10,23 +10,47 @@ import (
 	"dev/tagperformance/internal/common"
 
 	sq "github.com/Masterminds/squirrel"
-	_ "github.com/lib/pq"
 )
 
 func insertBatchArrayColumn(tx *sql.Tx, batch []*common.Cat, tagValueMap map[string]string) error {
-	inserts := make([]string, len(batch))
-	args := make([]interface{}, 0, len(batch))
-	for i, cat := range batch {
+	ins := sq.Insert("cats_array").Columns("name", "tags").PlaceholderFormat(sq.Dollar)
+	for _, cat := range batch {
 		catTags := make([]string, len(cat.Tags))
 		for j, tag := range cat.Tags {
 			catTags[j] = tagValueMap[fmt.Sprintf("%s:%s", tag.Name, tag.Value)]
 		}
-		args = append(args, cat.Name)
-		args = append(args, "{"+strings.Join(catTags, ",")+"}")
-		inserts[i] = fmt.Sprintf("($%d, $%d)", len(args)-1, len(args))
+		ins = ins.Values(cat.Name, "{"+strings.Join(catTags, ",")+"}")
 	}
-	_, err := tx.Exec("INSERT INTO cats_array(name, tags) VALUES "+strings.Join(inserts, ","), args...)
+	_, err := ins.RunWith(tx).Exec()
 	return err
+}
+
+func buildTagValueMap(tx *sql.Tx, tags []*common.Tag, tagMap map[string]int) (map[string]string, error) {
+	tagValueMap := make(map[string]string, 0)
+	ins := sq.Insert("tag_values").Columns("tag_id", "value").PlaceholderFormat(sq.Dollar)
+	for _, tag := range tags {
+		for _, val := range tag.Values {
+			ins = ins.Values(tagMap[tag.Name], val)
+		}
+	}
+	rows, err := ins.Suffix("RETURNING id").RunWith(tx).Query()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for _, tag := range tags {
+		for _, val := range tag.Values {
+			if !rows.Next() {
+				break
+			}
+			var valID string
+			if err := rows.Scan(&valID); err != nil {
+				return nil, err
+			}
+			tagValueMap[fmt.Sprintf("%s:%s", tag.Name, val)] = valID
+		}
+	}
+	return tagValueMap, nil
 }
 
 func SetupArrayColumn(db *sql.DB, cats []*common.Cat, tags []*common.Tag) error {
@@ -59,21 +83,9 @@ func SetupArrayColumn(db *sql.DB, cats []*common.Cat, tags []*common.Tag) error 
 	if err != nil {
 		return err
 	}
-	tagValueMap := make(map[string]string, 0)
-	for _, tag := range tags {
-		for _, val := range tag.Values {
-			result, err := tx.Query("INSERT INTO tag_values(tag_id, value) VALUES($1, $2) RETURNING id", tagMap[tag.Name], val)
-			if err != nil {
-				return err
-			}
-			result.Next()
-			var valID string
-			if err := result.Scan(&valID); err != nil {
-				return err
-			}
-			result.Close()
-			tagValueMap[fmt.Sprintf("%s:%s", tag.Name, val)] = valID
-		}
+	tagValueMap, err := buildTagValueMap(tx, tags, tagMap)
+	if err != nil {
+		return err
 	}
 	counter := 0
 	batchMax := 100

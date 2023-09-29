@@ -34,20 +34,23 @@ func runSQLQuery(name string, query sq.SelectBuilder) error {
 }
 
 func buildTagMap(tx *sql.Tx, tags []*common.Tag) (map[string]int, error) {
+	ins := sq.Insert("tags").Columns("name").PlaceholderFormat(sq.Dollar)
 	tagMap := make(map[string]int, len(tags))
 	for _, tag := range tags {
-		result, err := tx.Query("INSERT INTO tags(name) VALUES($1) RETURNING id, name", tag.Name)
-		if err != nil {
+		ins = ins.Values(tag.Name)
+	}
+	rows, err := ins.Suffix("RETURNING id, name").RunWith(tx).Query()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
 			return nil, err
 		}
-		for result.Next() {
-			var id int
-			var name string
-			if err := result.Scan(&id, &name); err != nil {
-				return nil, err
-			}
-			tagMap[name] = id
-		}
+		tagMap[name] = id
 	}
 	return tagMap, nil
 }

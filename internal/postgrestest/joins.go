@@ -3,42 +3,34 @@ package postgrestest
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"log"
-	"strings"
 
 	"dev/tagperformance/internal/common"
 
 	sq "github.com/Masterminds/squirrel"
-	_ "github.com/lib/pq"
 )
 
 func insertBatchJoinTable(tx *sql.Tx, batch []*common.Cat, tagMap map[string]int) error {
-	inserts := make([]string, len(batch))
-	args := make([]interface{}, len(batch))
-	for i, cat := range batch {
-		args[i] = cat.Name
-		inserts[i] = fmt.Sprintf("($%d)", i+1)
+	ins := sq.Insert("cats").Columns("name").PlaceholderFormat(sq.Dollar)
+	for _, cat := range batch {
+		ins = ins.Values(cat.Name)
 	}
-	result, err := tx.Query(fmt.Sprintf("INSERT INTO cats(name) VALUES %s RETURNING id", strings.Join(inserts, ",")), args...)
+	rows, err := ins.Suffix("RETURNING id").RunWith(tx).Query()
 	if err != nil {
 		return err
 	}
-	vals := make([]string, 0, len(inserts))
-	args = make([]interface{}, 0, len(inserts)*2)
-	for i := 0; result.Next(); i++ {
+	defer rows.Close()
+	ins = sq.Insert("cat_tags").Columns("cat_id", "tag_id", "value").PlaceholderFormat(sq.Dollar)
+	for i := 0; rows.Next(); i++ {
 		var id int
-		if err := result.Scan(&id); err != nil {
+		if err := rows.Scan(&id); err != nil {
 			return err
 		}
 		for _, tag := range batch[i].Tags {
-			args = append(args, id)
-			args = append(args, tagMap[tag.Name])
-			args = append(args, tag.Value)
-			vals = append(vals, fmt.Sprintf("($%d, $%d, $%d)", len(args)-2, len(args)-1, len(args)))
+			ins = ins.Values(id, tagMap[tag.Name], tag.Value)
 		}
 	}
-	_, err = tx.Exec("INSERT INTO cat_tags(cat_id, tag_id, value) VALUES "+strings.Join(vals, ","), args...)
+	_, err = ins.RunWith(tx).Exec()
 	return err
 }
 
