@@ -12,21 +12,25 @@ import (
 	sq "github.com/Masterminds/squirrel"
 )
 
-func insertBatchArrayColumn(tx *sql.Tx, batch []*common.Cat, tagValueMap map[string]string) error {
+func insertBatchArrayColumn(tx *sql.Tx, batch []*common.Cat, tagValueMap map[string]int) error {
 	ins := sq.Insert("cats_array").Columns("name", "tags").PlaceholderFormat(sq.Dollar)
 	for _, cat := range batch {
-		catTags := make([]string, len(cat.Tags))
-		for j, tag := range cat.Tags {
-			catTags[j] = tagValueMap[fmt.Sprintf("%s:%s", tag.Name, tag.Value)]
+		catTags := make([]interface{}, len(cat.Tags))
+		var placeholders string
+		if len(cat.Tags) > 0 {
+			for j, tag := range cat.Tags {
+				catTags[j] = tagValueMap[fmt.Sprintf("%s:%s", tag.Name, tag.Value)]
+			}
+			placeholders = strings.Repeat(",?", len(catTags))[1:]
 		}
-		ins = ins.Values(cat.Name, "{"+strings.Join(catTags, ",")+"}")
+		ins = ins.Values(cat.Name, sq.Expr("ARRAY["+placeholders+"]::integer[]", catTags...))
 	}
 	_, err := ins.RunWith(tx).Exec()
 	return err
 }
 
-func buildTagValueMap(tx *sql.Tx, tags []*common.Tag, tagMap map[string]int) (map[string]string, error) {
-	tagValueMap := make(map[string]string, 0)
+func buildTagValueMap(tx *sql.Tx, tags []*common.Tag, tagMap map[string]int) (map[string]int, error) {
+	tagValueMap := make(map[string]int, 0)
 	ins := sq.Insert("tag_values").Columns("tag_id", "value").PlaceholderFormat(sq.Dollar)
 	for _, tag := range tags {
 		for _, val := range tag.Values {
@@ -43,7 +47,7 @@ func buildTagValueMap(tx *sql.Tx, tags []*common.Tag, tagMap map[string]int) (ma
 			if !rows.Next() {
 				break
 			}
-			var valID string
+			var valID int
 			if err := rows.Scan(&valID); err != nil {
 				return nil, err
 			}
