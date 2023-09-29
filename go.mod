@@ -1,4 +1,4 @@
-module dev/postgrestest
+module dev/tagperformance
 
 go 1.19
 
