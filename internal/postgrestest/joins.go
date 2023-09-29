@@ -10,6 +10,19 @@ import (
 	sq "github.com/Masterminds/squirrel"
 )
 
+const initJoinTables = `
+DROP TABLE IF EXISTS cats;
+DROP TABLE IF EXISTS tags;
+DROP TABLE IF EXISTS cat_tags;
+DROP INDEX IF EXISTS cat_tags_x;
+CREATE TABLE cats(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
+CREATE TABLE tags(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
+CREATE TABLE cat_tags(cat_id INTEGER NOT NULL, tag_id INTEGER NOT NULL, value VARCHAR NOT NULL);
+CREATE INDEX cats_x ON cats(id);
+CREATE INDEX tags_x ON tags(id);
+CREATE INDEX cat_tags_x ON cat_tags(tag_id);
+`
+
 func insertBatchJoinTable(tx *sql.Tx, batch []*common.Cat, tagMap map[string]int) error {
 	ins := sq.Insert("cats").Columns("name").PlaceholderFormat(sq.Dollar)
 	for _, cat := range batch {
@@ -41,18 +54,7 @@ func SetupJoinTable(db *sql.DB, cats []*common.Cat, tags []*common.Tag) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`
-        DROP TABLE IF EXISTS cats;
-		DROP TABLE IF EXISTS tags;
-        DROP TABLE IF EXISTS cat_tags;
-        DROP INDEX IF EXISTS cat_tags_x;
-        CREATE TABLE cats(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
-		CREATE TABLE tags(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
-        CREATE TABLE cat_tags(cat_id INTEGER NOT NULL, tag_id INTEGER NOT NULL, value VARCHAR NOT NULL);
-        CREATE INDEX cats_x ON cats(id);
-		CREATE INDEX tags_x ON tags(id);
-        CREATE INDEX cat_tags_x ON cat_tags(tag_id);
-    `)
+	_, err = tx.Exec(initJoinTables)
 	if err != nil {
 		return err
 	}

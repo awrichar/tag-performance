@@ -12,6 +12,23 @@ import (
 	sq "github.com/Masterminds/squirrel"
 )
 
+const initArrayTables = `
+DROP TABLE IF EXISTS cats_array;
+DROP TABLE IF EXISTS tags;
+DROP TABLE IF EXISTS tag_values;
+DROP INDEX IF EXISTS cats_array_x;
+DROP INDEX IF EXISTS tags_x;
+DROP INDEX IF EXISTS tag_values_x;
+DROP INDEX IF EXISTS tag_values_name;
+CREATE TABLE cats_array(name VARCHAR NOT NULL, tags INTEGER[]);
+CREATE TABLE tags(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
+CREATE TABLE tag_values(id SERIAL PRIMARY KEY, tag_id INTEGER NOT NULL, value VARCHAR NOT NULL);
+CREATE INDEX cats_array_x ON cats_array USING GIN(tags);
+CREATE INDEX tags_x ON tags(id);
+CREATE INDEX tag_values_x ON tag_values(id);
+CREATE UNIQUE INDEX tag_values_name ON tag_values(tag_id, value);
+`
+
 func insertBatchArrayColumn(tx *sql.Tx, batch []*common.Cat, tagValueMap map[string]int) error {
 	ins := sq.Insert("cats_array").Columns("name", "tags").PlaceholderFormat(sq.Dollar)
 	for _, cat := range batch {
@@ -64,22 +81,7 @@ func SetupArrayColumn(db *sql.DB, cats []*common.Cat, tags []*common.Tag) error 
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`
-        DROP TABLE IF EXISTS cats_array;
-		DROP TABLE IF EXISTS tags;
-		DROP TABLE IF EXISTS tag_values;
-        DROP INDEX IF EXISTS cats_array_x;
-		DROP INDEX IF EXISTS tags_x;
-		DROP INDEX IF EXISTS tag_values_x;
-		DROP INDEX IF EXISTS tag_values_name;
-        CREATE TABLE cats_array(name VARCHAR NOT NULL, tags INTEGER[]);
-		CREATE TABLE tags(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
-		CREATE TABLE tag_values(id SERIAL PRIMARY KEY, tag_id INTEGER NOT NULL, value VARCHAR NOT NULL);
-        CREATE INDEX cats_array_x ON cats_array USING GIN(tags);
-		CREATE INDEX tags_x ON tags(id);
-		CREATE INDEX tag_values_x ON tag_values(id);
-		CREATE UNIQUE INDEX tag_values_name ON tag_values(tag_id, value);
-		`)
+	_, err = tx.Exec(initArrayTables)
 	if err != nil {
 		return err
 	}
