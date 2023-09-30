@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	"time"
 
 	"dev/tagperformance/internal/common"
 
@@ -68,23 +69,28 @@ func SetupJSONColumn(db *sql.DB, cats []*common.Cat, tags []*common.Tag) error {
 	return tx.Commit()
 }
 
-func QueryJSONColumn(db *sql.DB) error {
-	query := sq.Select("COUNT(*)").From("cats_b").
+func QueryJSONColumn(db *sql.DB, queryLimit uint64) ([]time.Duration, error) {
+	query := sq.Select("cats_b.name").From("cats_b").
 		Where(sq.Expr("cats_b.tags @@ ?", `$.color == "brown"`)).
+		Limit(queryLimit).
 		PlaceholderFormat(sq.Dollar).
 		RunWith(db)
-	if err := runSQLQuery("jsonb column (1 tag)", query); err != nil {
-		return err
+	d1, err := runSQLQuery("jsonb column (1 tag)", query)
+	if err != nil {
+		return nil, err
 	}
-	query = sq.Select("COUNT(*)").From("cats_b").
+
+	query = sq.Select("cats_b.name").From("cats_b").
 		Where(sq.Expr(
 			"cats_b.tags @@ ?",
-			`$.color == "brown" && $.demeanor == "grumpy" && $.age >= 4`,
+			`$.color == "brown" && $.demeanor == "grumpy" && $.age >= 10`,
 		)).
+		Limit(queryLimit).
 		PlaceholderFormat(sq.Dollar).
 		RunWith(db)
-	if err := runSQLQuery("jsonb column (3 tags)", query); err != nil {
-		return err
+	d2, err := runSQLQuery("jsonb column (3 tags)", query)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return []time.Duration{d1, d2}, nil
 }

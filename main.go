@@ -17,16 +17,29 @@ import (
 
 const doSetup = true
 const maxCats = 2000000
+const queryLimit = 1000
+const generateTags = 10
 
 const postgresUrl = "postgresql://postgres@localhost:8000/perf?sslmode=disable"
 const mongoUrl = "mongodb://localhost:8001"
 
 func makeTags() []*common.Tag {
-	return []*common.Tag{
+	tags := []*common.Tag{
 		{Name: "color", Values: []interface{}{"brown", "orange", "black"}},
 		{Name: "age", Values: []interface{}{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}},
 		{Name: "demeanor", Values: []interface{}{"friendly", "grumpy"}},
 	}
+	vals := make([]interface{}, 100)
+	for i := 0; i < len(vals); i++ {
+		vals[i] = i
+	}
+	for i := 0; i < generateTags; i++ {
+		tags = append(tags, &common.Tag{
+			Name:   fmt.Sprintf("tag-%d", i+1),
+			Values: vals,
+		})
+	}
+	return tags
 }
 
 func makeCats(tags []*common.Tag) []*common.Cat {
@@ -52,6 +65,31 @@ func chooseTags(tags []*common.Tag) []*common.TagValue {
 		}
 	}
 	return chosen
+}
+
+func runQueries(ctx context.Context, psql *sql.DB, mdb *mongo.Client) error {
+	join_d, err := postgrestest.QueryJoinTable(psql, queryLimit)
+	if err != nil {
+		return err
+	}
+	array_d, err := postgrestest.QueryArrayColumn(psql, queryLimit)
+	if err != nil {
+		return err
+	}
+	json_d, err := postgrestest.QueryJSONColumn(psql, queryLimit)
+	if err != nil {
+		return err
+	}
+	mongo_d, err := mongotest.QueryMongo(ctx, mdb, queryLimit)
+	if err != nil {
+		return err
+	}
+	fmt.Printf(`
+	PostgreSQL (join table): %v
+	PostgreSQL (array column): %v
+	PostgreSQL (jsonb column): %v
+	MongoDB: %v`+"\n", join_d, array_d, json_d, mongo_d)
+	return nil
 }
 
 func main() {
@@ -88,16 +126,7 @@ func main() {
 		log.Print("Done building tables")
 	}
 
-	if err := postgrestest.QueryJoinTable(psql); err != nil {
-		log.Fatal(err)
-	}
-	if err := postgrestest.QueryArrayColumn(psql); err != nil {
-		log.Fatal(err)
-	}
-	if err := postgrestest.QueryJSONColumn(psql); err != nil {
-		log.Fatal(err)
-	}
-	if err := mongotest.QueryMongo(ctx, mdb); err != nil {
+	if err := runQueries(ctx, psql, mdb); err != nil {
 		log.Fatal(err)
 	}
 }

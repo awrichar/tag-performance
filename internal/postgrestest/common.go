@@ -11,26 +11,23 @@ import (
 	_ "github.com/lib/pq"
 )
 
-func runSQLQuery(name string, query sq.SelectBuilder) error {
+func runSQLQuery(name string, query sq.SelectBuilder) (time.Duration, error) {
 	start := time.Now()
-	defer func() {
-		log.Printf("%s took %v", name, time.Since(start))
-	}()
 	sql, args, _ := query.ToSql()
 	log.Printf("%s; args:%v", sql, args)
 	rows, err := query.Query()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer rows.Close()
-	var count interface{}
-	if rows.Next() {
-		if err := rows.Scan(&count); err != nil {
-			return err
-		}
-		log.Printf("%v rows", count)
+	count := 0
+	for rows.Next() {
+		count++
 	}
-	return nil
+	log.Printf("%v rows", count)
+	duration := time.Since(start)
+	log.Printf("%s took %v", name, duration)
+	return duration, nil
 }
 
 func buildTagMap(tx *sql.Tx, tags []*common.Tag, table string) (map[string]int, error) {

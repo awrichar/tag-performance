@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"dev/tagperformance/internal/common"
 
@@ -17,15 +18,13 @@ DROP TABLE IF EXISTS cats_a;
 DROP TABLE IF EXISTS tags_a;
 DROP TABLE IF EXISTS tag_values_a;
 DROP INDEX IF EXISTS cats_a_tags;
-DROP INDEX IF EXISTS tags_a_id;
-DROP INDEX IF EXISTS tag_values_a_id;
+DROP INDEX IF EXISTS tags_a_name;
 DROP INDEX IF EXISTS tag_values_a_name;
 CREATE TABLE cats_a(name VARCHAR NOT NULL, tags INTEGER[]);
 CREATE TABLE tags_a(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
 CREATE TABLE tag_values_a(id SERIAL PRIMARY KEY, tag_id INTEGER NOT NULL, value VARCHAR NOT NULL);
 CREATE INDEX cats_a_tags ON cats_a USING GIN(tags);
-CREATE INDEX tags_a_id ON tags_a(id);
-CREATE INDEX tag_values_a_id ON tag_values_a(id);
+CREATE UNIQUE INDEX tags_a_name ON tags_a(name);
 CREATE UNIQUE INDEX tag_values_a_name ON tag_values_a(tag_id, value);
 `
 
@@ -115,10 +114,10 @@ func SetupArrayColumn(db *sql.DB, cats []*common.Cat, tags []*common.Tag) error 
 	return tx.Commit()
 }
 
-func QueryArrayColumn(db *sql.DB) error {
-	query := sq.Select("COUNT(*)").From("cats_a").
+func QueryArrayColumn(db *sql.DB, queryLimit uint64) ([]time.Duration, error) {
+	query := sq.Select("cats_a.name").From("cats_a").
 		Where(
-			sq.Expr("cats_a.tags @> ARRAY(?)",
+			sq.Expr("cats_a.tags && ARRAY(?)",
 				sq.Select("tag_values_a.id").From("tag_values_a").
 					Join("tags_a ON tag_values_a.tag_id = tags_a.id").
 					Where(sq.Eq{
@@ -127,12 +126,15 @@ func QueryArrayColumn(db *sql.DB) error {
 					}),
 			),
 		).
+		Limit(queryLimit).
 		PlaceholderFormat(sq.Dollar).
 		RunWith(db)
-	if err := runSQLQuery("array column (1 tag)", query); err != nil {
-		return err
+	d1, err := runSQLQuery("array column (1 tag)", query)
+	if err != nil {
+		return nil, err
 	}
-	query = sq.Select("COUNT(*)").From("cats_a").
+
+	query = sq.Select("cats_a.name").From("cats_a").
 		Where(sq.Expr("cats_a.tags @> ARRAY(?)",
 			sq.Select("tag_values_a.id").From("tag_values_a").
 				Join("tags_a ON tag_values_a.tag_id = tags_a.id").
@@ -152,13 +154,15 @@ func QueryArrayColumn(db *sql.DB) error {
 				Join("tags_a ON tag_values_a.tag_id = tags_a.id").
 				Where(sq.And{
 					sq.Eq{"tags_a.name": "age"},
-					sq.GtOrEq{"tag_values_a.value": "4"},
+					sq.GtOrEq{"tag_values_a.value": 10},
 				}),
 		)).
+		Limit(queryLimit).
 		PlaceholderFormat(sq.Dollar).
 		RunWith(db)
-	if err := runSQLQuery("array column (3 tags)", query); err != nil {
-		return err
+	d2, err := runSQLQuery("array column (3 tags)", query)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return []time.Duration{d1, d2}, nil
 }

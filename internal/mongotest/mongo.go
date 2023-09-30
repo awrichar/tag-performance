@@ -9,20 +9,24 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func runMongoQuery(ctx context.Context, name string, db *mongo.Collection, query bson.M) error {
+func runMongoQuery(ctx context.Context, name string, db *mongo.Collection, query bson.M, queryLimit int64) (time.Duration, error) {
 	start := time.Now()
-	defer func() {
-		log.Printf("%s took %v", name, time.Since(start))
-	}()
 	log.Print(query)
-	count, err := db.CountDocuments(ctx, query)
+	rows, err := db.Find(ctx, query, &options.FindOptions{Limit: &queryLimit})
 	if err != nil {
-		return err
+		return 0, err
+	}
+	count := 0
+	for rows.Next(ctx) {
+		count++
 	}
 	log.Printf("%d rows", count)
-	return nil
+	duration := time.Since(start)
+	log.Printf("%s took %v", name, duration)
+	return duration, nil
 }
 
 func SetupMongo(ctx context.Context, db *mongo.Client, cats []*common.Cat) error {
@@ -64,19 +68,22 @@ func SetupMongo(ctx context.Context, db *mongo.Client, cats []*common.Cat) error
 	return nil
 }
 
-func QueryMongo(ctx context.Context, db *mongo.Client) error {
+func QueryMongo(ctx context.Context, db *mongo.Client, queryLimit int64) ([]time.Duration, error) {
 	coll := db.Database("cats").Collection("cats")
-	if err := runMongoQuery(ctx, "mongo (1 tag)", coll, bson.M{
+	d1, err := runMongoQuery(ctx, "mongo (1 tag)", coll, bson.M{
 		"tags.color": "brown",
-	}); err != nil {
-		return err
+	}, queryLimit)
+	if err != nil {
+		return nil, err
 	}
-	if err := runMongoQuery(ctx, "mongo (3 tags)", coll, bson.M{
+
+	d2, err := runMongoQuery(ctx, "mongo (3 tags)", coll, bson.M{
 		"tags.color":    "brown",
-		"tags.age":      bson.M{"$gte": "4"},
+		"tags.age":      bson.M{"$gte": 10},
 		"tags.demeanor": "grumpy",
-	}); err != nil {
-		return err
+	}, queryLimit)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return []time.Duration{d1, d2}, nil
 }

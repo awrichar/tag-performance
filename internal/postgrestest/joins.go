@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"time"
 
 	"dev/tagperformance/internal/common"
 
@@ -14,15 +15,13 @@ const initJoinTables = `
 DROP TABLE IF EXISTS cats_j;
 DROP TABLE IF EXISTS tags_j;
 DROP TABLE IF EXISTS cat_tags_j;
-DROP INDEX IF EXISTS cats_j_id;
-DROP INDEX IF EXISTS tags_j_id;
-DROP INDEX IF EXISTS cat_tags_j_id;
+DROP INDEX IF EXISTS tags_j_name;
+DROP INDEX IF EXISTS cat_tags_j_val;
 CREATE TABLE cats_j(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
 CREATE TABLE tags_j(id SERIAL PRIMARY KEY, name VARCHAR NOT NULL);
 CREATE TABLE cat_tags_j(cat_id INTEGER NOT NULL, tag_id INTEGER NOT NULL, value VARCHAR NOT NULL);
-CREATE INDEX cats_j_id ON cats_j(id);
-CREATE INDEX tags_j_id ON tags_j(id);
-CREATE INDEX cat_tags_j_id ON cat_tags_j(tag_id);
+CREATE UNIQUE INDEX tags_j_name ON tags_j(name);
+CREATE INDEX cat_tags_j_val ON cat_tags_j(tag_id, value, cat_id);
 `
 
 func insertBatchJoinTable(tx *sql.Tx, batch []*common.Cat, tagMap map[string]int) error {
@@ -86,42 +85,39 @@ func SetupJoinTable(db *sql.DB, cats []*common.Cat, tags []*common.Tag) error {
 	return tx.Commit()
 }
 
-func QueryJoinTable(db *sql.DB) error {
-	query := sq.Select("COUNT(*)").From("cats_j").
-		Join("cat_tags_j tagv1 ON cats_j.id = tagv1.cat_id").
-		Join("tags_j tagn1 ON tagv1.tag_id = tagn1.id").
-		Where(sq.Eq{
-			"tagn1.name":  "color",
-			"tagv1.value": "brown",
-		}).
-		PlaceholderFormat(sq.Dollar).
-		RunWith(db)
-	if err := runSQLQuery("join table (1 tag)", query); err != nil {
-		return err
-	}
-	query = sq.Select("COUNT(*)").From("cats_j").
-		Join("cat_tags_j tagv1 ON cats_j.id = tagv1.cat_id").
-		Join("cat_tags_j tagv2 ON cats_j.id = tagv2.cat_id").
-		Join("cat_tags_j tagv3 ON cats_j.id = tagv3.cat_id").
-		Join("tags_j tagn1 ON tagv1.tag_id = tagn1.id").
-		Join("tags_j tagn2 ON tagv2.tag_id = tagn2.id").
-		Join("tags_j tagn3 ON tagv3.tag_id = tagn3.id").
+func QueryJoinTable(db *sql.DB, queryLimit uint64) ([]time.Duration, error) {
+	query := sq.Select("cats_j.name").From("cats_j, cat_tags_j tag1").
 		Where(sq.And{
-			sq.Eq{
-				"tagn1.name":  "color",
-				"tagv1.value": "brown",
-				"tagn2.name":  "age",
-				"tagn3.name":  "demeanor",
-				"tagv3.value": "grumpy",
-			},
-			sq.GtOrEq{
-				"tagv2.value": "4",
-			},
+			sq.Expr("tag1.cat_id = cats_j.id"),
+			sq.Expr("tag1.tag_id = (?)", sq.Select("id").From("tags_j").Where(sq.Eq{"name": "color"}).Limit(1)),
+			sq.Eq{"tag1.value": "brown"},
 		}).
+		Limit(queryLimit).
 		PlaceholderFormat(sq.Dollar).
 		RunWith(db)
-	if err := runSQLQuery("join table (3 tags)", query); err != nil {
-		return err
+	d1, err := runSQLQuery("join table (1 tag)", query)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+
+	query = sq.Select("cats_j.name").From("cats_j, cat_tags_j tag1, cat_tags_j tag2, cat_tags_j tag3").
+		Where(sq.And{
+			sq.Expr("tag1.cat_id = cats_j.id"),
+			sq.Expr("tag2.cat_id = cats_j.id"),
+			sq.Expr("tag3.cat_id = cats_j.id"),
+			sq.Expr("tag1.tag_id = (?)", sq.Select("id").From("tags_j").Where(sq.Eq{"name": "color"}).Limit(1)),
+			sq.Expr("tag2.tag_id = (?)", sq.Select("id").From("tags_j").Where(sq.Eq{"name": "age"}).Limit(1)),
+			sq.Expr("tag3.tag_id = (?)", sq.Select("id").From("tags_j").Where(sq.Eq{"name": "demeanor"}).Limit(1)),
+			sq.Eq{"tag1.value": "brown"},
+			sq.GtOrEq{"tag2.value": 10},
+			sq.Eq{"tag3.value": "grumpy"},
+		}).
+		Limit(queryLimit).
+		PlaceholderFormat(sq.Dollar).
+		RunWith(db)
+	d2, err := runSQLQuery("join table (3 tags)", query)
+	if err != nil {
+		return nil, err
+	}
+	return []time.Duration{d1, d2}, nil
 }
